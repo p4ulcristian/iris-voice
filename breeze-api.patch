@@ -1,0 +1,103 @@
+diff --git i/breeze_infer/api.py w/breeze_infer/api.py
+index a68b3ca..5033b15 100644
+--- i/breeze_infer/api.py
++++ w/breeze_infer/api.py
+@@ -7,6 +7,7 @@ import hashlib
+ import os
+ import tempfile
+ import threading
++import time
+ import uuid
+ from collections.abc import AsyncIterator, Iterator
+ from contextlib import asynccontextmanager
+@@ -16,6 +17,8 @@ from pathlib import Path
+ import numpy as np
+ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+ from fastapi.responses import JSONResponse, StreamingResponse
++from starlette.background import BackgroundTask
++from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+ 
+ from breeze_infer.runtime import (
+     load_runtime,
+@@ -53,6 +56,8 @@ class ApiSettings:
+ 
+ _settings: ApiSettings | None = None
+ _request_lock = threading.Lock()
++# Iris: a request waits this long for the one before it, instead of being refused at once.
++QUEUE_WAIT_S = 30.0
+ 
+ 
+ def _pcm16(audio: np.ndarray) -> bytes:
+@@ -185,7 +190,7 @@ async def speech(
+     ref_text: str = Form(""),
+     seed: int = Form(42),
+ ) -> StreamingResponse:
+-    if not _request_lock.acquire(blocking=False):
++    if not await run_in_threadpool(_request_lock.acquire, True, QUEUE_WAIT_S):
+         raise HTTPException(
+             status_code=409, detail="An inference request is already running."
+         )
+@@ -238,24 +243,50 @@ async def speech(
+         _request_lock.release()
+         raise
+ 
+-    def body() -> Iterator[bytes]:
++    # Iris: the lock is released exactly once, also when the client goes away mid-stream or
++    # before the stream starts (a plain generator's finally never runs then, and every later
++    # request was refused with 409 until a restart).
++    released = False
++
++    def release() -> None:
++        nonlocal released
++        if released:
++            return
++        released = True
++        if reference_path is not None:
++            reference_path.unlink(missing_ok=True)
++        _request_lock.release()
++
++    def pcm_chunks() -> Iterator[bytes]:
++        for chunk in _iter_seeded_audio_chunks(
++            app.state.runtime,
++            inputs,
++            request_id=request_id,
++            seed=seed,
++        ):
++            pcm = _pcm16(chunk.audio)
++            if pcm:
++                yield pcm
++
++    async def body() -> AsyncIterator[bytes]:
++        gen = pcm_chunks()
+         try:
+-            for chunk in _iter_seeded_audio_chunks(
+-                app.state.runtime,
+-                inputs,
+-                request_id=request_id,
+-                seed=seed,
+-            ):
+-                pcm = _pcm16(chunk.audio)
+-                if pcm:
+-                    yield pcm
++            async for pcm in iterate_in_threadpool(gen):
++                yield pcm
+         finally:
+-            if reference_path is not None:
+-                reference_path.unlink(missing_ok=True)
+-            _request_lock.release()
++            # Stop the runtime's generator (its own cleanup runs) before the next request may
++            # start; if a chunk is still being made in its thread, wait for it.
++            for _ in range(200):
++                try:
++                    gen.close()
++                    break
++                except ValueError:
++                    time.sleep(0.05)
++            release()
+ 
+     return StreamingResponse(
+         body(),
++        background=BackgroundTask(release),
+         media_type="audio/pcm",
+         headers={
+             "X-Sample-Rate": str(app.state.runtime.sample_rate),
