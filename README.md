@@ -1,8 +1,8 @@
 # voice
 
-Iris's voice: [Breeze TTS 2](https://github.com/breezeblue-ai/breeze-tts), a
-3B text-to-speech model, served on a GPU machine and called by the Iris server.
-English only (Breeze also speaks Chinese).
+Iris's voice: [OmniVoice](https://github.com/k2-fsa/OmniVoice), a 0.6B
+text-to-speech model, run on the same machine as the Iris server by
+`server.py` here. It speaks 600+ languages, Hungarian among them.
 
 Her ears are still to be built here; the plan is to reuse
 [iris-dictation](../dictation)'s model.
@@ -10,35 +10,36 @@ Her ears are still to be built here; the plan is to reuse
 ## How it fits
 
 ```
-Iris server (server/speech.ts)  ── text + reference clip ──▶  iris-voice (Breeze, GPU)
+Iris server (server/speech.ts)  ── text + reference clip ──▶  iris-voice (server.py, OmniVoice, GPU)
                                 ◀── 24 kHz PCM, streamed ───
 ```
 
 - **Voices** are described in words in `server/speech.ts` (`VOICES`); Settings
-  lists them. Breeze designs each one once from its description, speaking a
-  fixed line; that reference clip is kept in `.memory/voices/`. Every sentence
-  after that clones the clip, so she sounds like the same person each time.
-  Editing a description makes a new clip.
-- **Speed** on an RTX 5090, from the Iris server over a tunnel: first audio in
-  0.2 to 0.5 s, about 3x real time. The reference upload (~130 KB, FLAC) is most
-  of the difference from the 0.2 s Breeze manages with no reference.
-- **License**: the code is Apache 2.0, the weights are for research and
-  non-commercial use only.
+  lists them. Each is designed once from its description, speaking a fixed
+  line; that reference clip is kept in `.memory/voices/`. Every sentence after
+  that clones the clip, so she sounds like the same person each time. Editing
+  a description makes a new clip. OmniVoice designs from tags, not prose, so
+  `server.py` maps a description to the nearest ones ("a calm woman in her
+  thirties with a low voice" → `female, middle-aged, low pitch`).
+- **Other languages**: a clip in one language gives that language's accent in
+  another. For accent-free Hungarian she needs a Hungarian reference clip.
+- **Speed** on an RTX 5060 Ti: about 7× real time. OmniVoice makes a sentence
+  at a time, so the first sentence plays while the rest are made.
+- **Memory**: about 2.3 GB of GPU memory while it runs.
+- **License**: the code is Apache 2.0, the model weights CC-BY-NC 4.0
+  (non-commercial).
 
-## Install (on the GPU machine)
+## Install
 
 ```bash
-VOICE_HOST=<private address> voice/install.sh
+voice/install.sh
 ```
 
-It clones Breeze, makes its venv (torch for CUDA 12.8), downloads the weights
-(7 GB) and starts `iris-voice.service`. With `--fast-all` it holds about 16 GB of
-GPU memory and warms up for about 100 s at start; drop the flag for about 8 GB
-and slower first audio.
-
-The API has no authentication, so `VOICE_HOST` must be an address only the Iris
-server can reach. Then, on the Iris machine, set
-`IRIS_VOICE_URL=http://<address>:7860` in `server/.env` and deploy.
+It clones OmniVoice (to `~/.local/share/omnivoice`, or `VOICE_CODE`), syncs its
+venv, downloads the model (~2.5 GB) and starts the user service `iris-voice`
+on `127.0.0.1:7860`, which is the Iris server's default `IRIS_VOICE_URL`. If
+`server/.env` sets `IRIS_VOICE_URL` to somewhere else, remove it and restart
+the Iris server.
 
 ## API
 
@@ -47,7 +48,10 @@ while it is made:
 
 | fields | does |
 |---|---|
-| `text`, `instruction`, `cfg_scale` (4), `seed` | design a voice from a description |
-| `text`, `ref_audio`, `ref_text` (its exact words), `seed` | clone a voice (no `cfg_scale`) |
+| `text`, `ref_audio`, `ref_text` (its exact words), `seed` | clone a voice |
+| `text`, `instruction`, `seed` | design a voice from a description |
+| `language` (optional, e.g. `hu`) | the text's language; a little better than guessing |
 
-One request at a time; others wait up to 30 s (`breeze-api.patch`, applied by `install.sh`: upstream refuses a second request with 409, and a stream cut off early left it refusing every request until a restart).
+`cfg_scale` is accepted and ignored (Breeze, the voice before this one, used
+it). One request at a time; others wait. `GET /health` answers `ok` once the
+model is loaded.

@@ -1,22 +1,13 @@
 [Unit]
-Description=Iris voice: Breeze TTS 2 streaming API
-# install.sh fills in the placeholders. If the listen address comes from a
-# WireGuard interface, add its unit here (e.g. wg-quick@wg0.service) so the
-# address exists before the server binds it; Restart= covers it otherwise.
-After=network-online.target
-Wants=network-online.target
+Description=Iris voice: OmniVoice behind Iris's speech API (voice/server.py)
+# install.sh fills in the placeholders.
+After=default.target
 
 [Service]
 Type=simple
-User=YOUR_USER
-Group=YOUR_USER
-WorkingDirectory=CODE_DIR
-# The API has no authentication: listen only on a private address.
-ExecStart=CODE_DIR/.venv/bin/python -m breeze_infer.api WEIGHTS_DIR --host VOICE_HOST --port VOICE_PORT --fast-all
+ExecStart=CODE_DIR/.venv/bin/python SERVER_PY --host 127.0.0.1 --port VOICE_PORT
 Restart=on-failure
 RestartSec=10
-# The fast path captures CUDA graphs at start (~100 s).
-TimeoutStartSec=600
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
