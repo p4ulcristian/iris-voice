@@ -26,6 +26,7 @@ if any((_HUB.expanduser() / "models--k2-fsa--OmniVoice" / "snapshots").glob("*/c
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import argparse
+import asyncio
 import hashlib
 import logging
 import re
@@ -48,6 +49,7 @@ PROMPTS_KEPT = 16         # encoded reference clips kept in memory
 app = FastAPI()
 model: OmniVoice | None = None
 lock = threading.Lock()   # the GPU makes one sentence at a time
+turn = asyncio.Lock()     # and serves one request at a time; a hang-up gives up the turn
 prompts: OrderedDict[str, object] = OrderedDict()
 
 # OmniVoice designs a voice from tags, not prose. Iris's voices are described in
@@ -142,21 +144,31 @@ async def speech(
         raise HTTPException(400, "ref_audio and ref_text must be given together")
     ref = (await ref_audio.read(), Path(ref_audio.filename).suffix or ".wav") if has_ref else None
 
-    def stream():
+    def say(part: str, kw: dict) -> bytes:
         with lock:
+            torch.manual_seed(seed)
+            return pcm(model.generate(text=part, **kw)[0])
+
+    def prompt_for() -> object:
+        with lock:
+            return clone_prompt(ref[0], ref[1], ref_text.strip())
+
+    # Async, so a client that hangs up cancels the stream and frees the turn. The old
+    # sync generator sat paused at its yield after a hang-up, holding the lock forever,
+    # and every later request waited behind it.
+    async def stream():
+        async with turn:
             kw: dict = {"language": language or None}
             if ref:
-                kw["voice_clone_prompt"] = clone_prompt(ref[0], ref[1], ref_text.strip())
+                kw["voice_clone_prompt"] = await asyncio.to_thread(prompt_for)
             elif instruction.strip():
                 kw["instruct"] = tags_for(instruction)
             for part in sentences(words):
-                torch.manual_seed(seed)
                 try:
-                    audio = model.generate(text=part, **kw)[0]
+                    yield await asyncio.to_thread(say, part, kw)
                 except Exception:
                     log.exception("generate failed on %r", part[:80])
                     return
-                yield pcm(audio)
 
     return StreamingResponse(stream(), media_type="application/octet-stream")
 
