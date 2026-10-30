@@ -37,7 +37,9 @@ voice/install.sh
 
 It clones OmniVoice (to `~/.local/share/omnivoice`, or `VOICE_CODE`), syncs its
 venv, downloads the model (~2.5 GB) and starts the user service `iris-voice`
-on `127.0.0.1:7860`, which is the Iris server's default `IRIS_VOICE_URL`. If
+on `127.0.0.1:7860`, which is the Iris server's default `IRIS_VOICE_URL`. `VOICE_HOSTS="127.0.0.1 <address>"` makes it listen on more addresses
+(a VPN's, for a proxy in front); only a firewall keeps others out, there is no
+authentication here. If
 `server/.env` sets `IRIS_VOICE_URL` to somewhere else, remove it and restart
 the Iris server.
 

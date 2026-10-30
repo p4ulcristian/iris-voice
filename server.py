@@ -6,7 +6,10 @@
     GET  /health            "ok" once the model is loaded
 
 Run it with OmniVoice's own venv:  <omnivoice>/.venv/bin/python voice/server.py
-It listens on 127.0.0.1 by default: there is no authentication.
+It listens on 127.0.0.1 by default: there is no authentication. Each --host
+adds an address; one that is not up yet (a VPN's) is bound anyway and starts
+answering when it comes up. Whatever lets callers in from elsewhere (a proxy, a
+firewall) is where their authentication goes.
 
 OmniVoice makes a sentence at a time, not a stream, so long text is spoken
 sentence by sentence and the first one plays while the rest are made. A
@@ -30,6 +33,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import socket
 import tempfile
 import threading
 from collections import OrderedDict
@@ -176,7 +180,7 @@ async def speech(
 def main() -> None:
     global model
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", action="append", help="address to listen on; repeat for more (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--model", default="k2-fsa/OmniVoice")
     args = ap.parse_args()
@@ -184,8 +188,18 @@ def main() -> None:
     log.info("loading %s", args.model)
     model = OmniVoice.from_pretrained(args.model, device_map="cuda:0", dtype=torch.float16)
     model.generate(text="Ready.")            # warm up: the first sentence is slow otherwise
-    log.info("ready on %s:%d", args.host, args.port)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    hosts = args.host or ["127.0.0.1"]
+    log.info("ready on %s, port %d", ", ".join(hosts), args.port)
+    uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[listen(h, args.port) for h in hosts])
+
+
+def listen(host: str, port: int) -> socket.socket:
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # A VPN address may come up after this service; bind it now and serve it once it does.
+    sock.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_FREEBIND", 15), 1)   # 15 on Linux
+    sock.bind((host, port))
+    return sock
 
 
 if __name__ == "__main__":

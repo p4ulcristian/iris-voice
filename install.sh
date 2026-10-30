@@ -2,12 +2,15 @@
 # Install Iris's voice (OmniVoice) on the machine the Iris server runs on. Safe to run again.
 #
 #   voice/install.sh
+#   VOICE_HOSTS="127.0.0.1 <vpn address>" voice/install.sh   # also listen on the VPN
 #
 # Needs Linux, an NVIDIA GPU with ~2.5 GB free, uv and git. Takes ~8 GB of disk:
 # OmniVoice's code and venv (VOICE_CODE) and the model in the Hugging Face cache.
-# Runs as a user service listening on 127.0.0.1 (the API has no authentication).
+# Runs as a user service listening on 127.0.0.1 (the API has no authentication);
+# a VPN address in VOICE_HOSTS needs a firewall that lets only the proxy in front reach it.
 set -euo pipefail
 PORT=${VOICE_PORT:-7860}
+HOST_ARGS=$(printf -- '--host %s ' ${VOICE_HOSTS:-127.0.0.1})
 CODE=${VOICE_CODE:-$HOME/.local/share/omnivoice}
 HERE="$(dirname "$(readlink -f "$0")")"
 
@@ -15,7 +18,7 @@ HERE="$(dirname "$(readlink -f "$0")")"
 (cd "$CODE" && uv sync -q)
 
 mkdir -p ~/.config/systemd/user
-sed -e "s|CODE_DIR|$CODE|g" -e "s|SERVER_PY|$HERE/server.py|g" -e "s|VOICE_PORT|$PORT|g" \
+sed -e "s|CODE_DIR|$CODE|g" -e "s|SERVER_PY|$HERE/server.py|g" -e "s|VOICE_PORT|$PORT|g" -e "s|HOST_ARGS|${HOST_ARGS% }|g" \
     "$HERE/iris-voice.service" > ~/.config/systemd/user/iris-voice.service
 systemctl --user daemon-reload
 systemctl --user enable --now iris-voice.service
