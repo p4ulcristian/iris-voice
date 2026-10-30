@@ -1,47 +1,49 @@
-# voice
+# iris-voice
 
-Iris's voice: [OmniVoice](https://github.com/k2-fsa/OmniVoice), a 0.6B
-text-to-speech model, run on the same machine as the Iris server by
-`server.py` here. It speaks 600+ languages, Hungarian among them.
-
-Her ears are still to be built here; the plan is to reuse
-[iris-dictation](../dictation)'s model.
+Text to speech on your own GPU: [OmniVoice](https://github.com/k2-fsa/OmniVoice),
+a 0.6B model that speaks 600+ languages (Hungarian among them), behind an
+OpenAI-style `POST /v1/audio/speech` and a bearer token. It is the voice of
+[Iris](https://github.com/topics/iris); its ears are
+[iris-listen](https://github.com/p4ulcristian/iris-listen).
 
 ## How it fits
 
 ```
-Iris server (server/speech.ts)  ── text + reference clip ──▶  iris-voice (server.py, OmniVoice, GPU)
-                                ◀── 24 kHz PCM, streamed ───
+any program ── Bearer token, text (+ a voice) ──▶ iris-voice (server.py, OmniVoice, GPU)
+            ◀── 24 kHz PCM, streamed ──────────
 ```
 
-- **Voices** are described in words in `server/speech.ts` (`VOICES`); Settings
-  lists them. Each is designed once from its description, speaking a fixed
-  line; that reference clip is kept in `.memory/voices/`. Every sentence after
-  that clones the clip, so she sounds like the same person each time. Editing
-  a description makes a new clip. OmniVoice designs from tags, not prose, so
-  `server.py` maps a description to the nearest ones ("a calm woman in her
-  thirties with a low voice" → `female, middle-aged, low pitch`).
+- **The token**: every request needs `Authorization: Bearer <token>`, or the
+  answer is 401. The token is in `~/.config/iris-voice/token`, made by the
+  first install. So the service is safe on any address, with or without a
+  proxy in front.
+- **Voices**: a voice is cloned from a reference clip (`ref_audio` + its words
+  in `ref_text`), or designed from a description (`instruction`). A
+  description alone drifts a little from one sentence to the next, so a caller
+  that wants the same voice every time designs it once and clones that clip
+  after. OmniVoice designs from tags, not prose, so `server.py` maps a
+  description to the nearest ones ("a calm woman in her thirties with a low
+  voice" → `female, middle-aged, low pitch`).
 - **Other languages**: a clip in one language gives that language's accent in
-  another. For accent-free Hungarian she needs a Hungarian reference clip.
+  another. For accent-free Hungarian, clone a Hungarian clip.
 - **Speed** on an RTX 5060 Ti: about 7× real time. OmniVoice makes a sentence
   at a time, so the first sentence plays while the rest are made.
-- **Memory**: about 2.3 GB of GPU memory while it runs.
+- **Memory**: about 5 GB of GPU memory while it runs.
 - **License**: the code is Apache 2.0, the model weights CC-BY-NC 4.0
   (non-commercial).
 
 ## Install
 
 ```bash
-voice/install.sh
+git clone https://github.com/p4ulcristian/iris-voice && iris-voice/install.sh
 ```
 
-It clones OmniVoice (to `~/.local/share/omnivoice`, or `VOICE_CODE`), syncs its
-venv, downloads the model (~2.5 GB) and starts the user service `iris-voice`
-on `127.0.0.1:7860`, which is the Iris server's default `IRIS_VOICE_URL`. `VOICE_HOSTS="127.0.0.1 <address>"` makes it listen on more addresses
-(a VPN's, for a proxy in front); only a firewall keeps others out, there is no
-authentication here. If
-`server/.env` sets `IRIS_VOICE_URL` to somewhere else, remove it and restart
-the Iris server.
+It makes the token, clones OmniVoice (to `~/.local/share/omnivoice`, or
+`VOICE_CODE`), syncs its venv, downloads the model (~2.5 GB) and starts the
+user service `iris-voice` on `127.0.0.1:7860` (`VOICE_PORT`).
+`VOICE_HOSTS="127.0.0.1 <address>"` makes it listen on more addresses, a VPN's
+for a proxy in front; an address that is not up yet is bound anyway and
+answers once it is. `VOICE_TOKEN_FILE` puts the token somewhere else.
 
 ## API
 
@@ -57,3 +59,9 @@ while it is made:
 `cfg_scale` is accepted and ignored (Breeze, the voice before this one, used
 it). One request at a time; others wait. `GET /health` answers `ok` once the
 model is loaded.
+
+```bash
+curl -s -H "Authorization: Bearer $(cat ~/.config/iris-voice/token)" \
+  -F text="Hello there." -F instruction="a calm woman" \
+  http://127.0.0.1:7860/v1/audio/speech | aplay -f S16_LE -r 24000 -c 1
+```

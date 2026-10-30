@@ -5,11 +5,13 @@
         text + instruction [+ seed, language]                              design one
     GET  /health            "ok" once the model is loaded
 
-Run it with OmniVoice's own venv:  <omnivoice>/.venv/bin/python voice/server.py
-It listens on 127.0.0.1 by default: there is no authentication. Each --host
-adds an address; one that is not up yet (a VPN's) is bound anyway and starts
-answering when it comes up. Whatever lets callers in from elsewhere (a proxy, a
-firewall) is where their authentication goes.
+Every request needs `Authorization: Bearer <token>`, the token in --token-file
+(install.sh makes one); without it the answer is 401. So it is safe on any
+address, behind a proxy or not.
+
+Run it with OmniVoice's own venv:  <omnivoice>/.venv/bin/python server.py
+It listens on 127.0.0.1 by default. Each --host adds an address; one that is
+not up yet (a VPN's) is bound anyway and starts answering when it comes up.
 
 OmniVoice makes a sentence at a time, not a stream, so long text is spoken
 sentence by sentence and the first one plays while the rest are made. A
@@ -33,6 +35,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import secrets
 import socket
 import tempfile
 import threading
@@ -41,8 +44,9 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from omnivoice import OmniVoice
 
 log = logging.getLogger("iris-voice")
@@ -50,7 +54,17 @@ RATE = 24000
 MAX_CHARS = 5000
 PROMPTS_KEPT = 16         # encoded reference clips kept in memory
 
-app = FastAPI()
+token = b""                 # from --token-file, before the first request
+bearer = HTTPBearer(auto_error=False)
+
+
+def authorized(cred: HTTPAuthorizationCredentials | None = Depends(bearer)) -> None:
+    if cred is None or not secrets.compare_digest(cred.credentials.encode(), token):
+        raise HTTPException(401, "a bearer token is needed", headers={"WWW-Authenticate": "Bearer"})
+
+
+# No /docs or /openapi.json: the API is in this docstring and the README.
+app = FastAPI(dependencies=[Depends(authorized)], docs_url=None, redoc_url=None, openapi_url=None)
 model: OmniVoice | None = None
 lock = threading.Lock()   # the GPU makes one sentence at a time
 turn = asyncio.Lock()     # and serves one request at a time; a hang-up gives up the turn
@@ -178,13 +192,18 @@ async def speech(
 
 
 def main() -> None:
-    global model
+    global model, token
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", action="append", help="address to listen on; repeat for more (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--model", default="k2-fsa/OmniVoice")
+    ap.add_argument("--token-file", required=True, type=Path,
+                    help="file holding the bearer token every request must carry")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    token = args.token_file.expanduser().read_text().strip().encode()
+    if not token:
+        ap.error(f"{args.token_file} is empty")
     log.info("loading %s", args.model)
     model = OmniVoice.from_pretrained(args.model, device_map="cuda:0", dtype=torch.float16)
     model.generate(text="Ready.")            # warm up: the first sentence is slow otherwise

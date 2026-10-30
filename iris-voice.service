@@ -1,11 +1,11 @@
 [Unit]
-Description=Iris voice: OmniVoice behind Iris's speech API (voice/server.py)
+Description=iris-voice: OmniVoice text to speech (server.py)
 # install.sh fills in the placeholders.
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=CODE_DIR/.venv/bin/python SERVER_PY HOST_ARGS --port VOICE_PORT
+ExecStart=CODE_DIR/.venv/bin/python SERVER_PY HOST_ARGS --port VOICE_PORT --token-file TOKEN_FILE
 Restart=on-failure
 RestartSec=10
 
