@@ -1,9 +1,16 @@
 """Iris's voice: OmniVoice (k2-fsa, 0.6B) behind the API Iris already speaks.
 
     POST /v1/audio/speech   multipart form → raw 16-bit mono PCM at 24 kHz, streamed
+        text [+ voice, seed, language]                                     a named voice (below)
         text + ref_audio + ref_text (its exact words) [+ seed, language]   clone a voice
         text + instruction [+ seed, language]                              design one
+    GET  /v1/voices         the named voices and their languages, and the default
     GET  /health            "ok" once the model is loaded
+
+Named voices are folders in --voices-dir: <name>/<language>.flac (or .wav) with
+<language>.txt holding its exact words, one pair per language (en.flac, hu.flac...).
+Text alone is spoken in --default-voice, from the clip in the request's language,
+else its English clip, else its first; without a default voice OmniVoice picks one.
 
 Every request needs `Authorization: Bearer <token>`, the token in --token-file
 (install.sh makes one); without it the answer is 401. So it is safe on any
@@ -48,6 +55,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from omnivoice import OmniVoice
+from omnivoice.utils.lang_map import LANG_IDS, LANG_NAME_TO_ID
 
 log = logging.getLogger("iris-voice")
 RATE = 24000
@@ -55,6 +63,9 @@ MAX_CHARS = 5000
 PROMPTS_KEPT = 16         # encoded reference clips kept in memory
 
 token = b""                 # from --token-file, before the first request
+voices_dir = Path()         # from --voices-dir
+default_voice = ""          # from --default-voice; "" = OmniVoice picks a voice
+NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -135,6 +146,43 @@ def clone_prompt(data: bytes, suffix: str, ref_text: str):
     return prompt
 
 
+def language_code(language: str) -> str | None:
+    """ "hu", "Hungarian" or "hungarian" → "hu"; None when OmniVoice does not know it."""
+    key = language.strip()
+    return key if key in LANG_IDS else LANG_NAME_TO_ID.get(key.lower())
+
+
+def voice_languages(name: str) -> dict[str, Path]:
+    """A named voice's clips by language code: <code>.flac or <code>.wav with <code>.txt beside it."""
+    folder = voices_dir / name
+    clips = {}
+    for words in sorted(folder.glob("*.txt")):
+        audio = next((a for a in (words.with_suffix(".flac"), words.with_suffix(".wav")) if a.is_file()), None)
+        if audio:
+            clips[words.stem] = audio
+    return clips
+
+
+def named_voice(name: str, language: str) -> tuple[bytes, str, str]:
+    """The clip (bytes, suffix) and its words that speak `language` in voice `name`."""
+    if not NAME.match(name):
+        raise HTTPException(400, "voice: lowercase letters, digits, - and _")
+    clips = voice_languages(name)
+    if not clips:
+        raise HTTPException(400, f"no voice named {name!r}; GET /v1/voices lists them")
+    code = language_code(language) if language else None
+    audio = clips.get(code) or clips.get("en") or next(iter(clips.values()))
+    return audio.read_bytes(), audio.suffix, audio.with_suffix(".txt").read_text().strip()
+
+
+@app.get("/v1/voices")
+def voices():
+    names = sorted(d.name for d in voices_dir.iterdir() if d.is_dir() and NAME.match(d.name)) \
+        if voices_dir.is_dir() else []
+    listed = {n: sorted(voice_languages(n)) for n in names}
+    return {"default": default_voice or None, "voices": {n: langs for n, langs in listed.items() if langs}}
+
+
 @app.get("/health")
 def health():
     if model is None:
@@ -151,6 +199,7 @@ async def speech(
     cfg_scale: str = Form(""),     # Breeze's; accepted and ignored
     seed: int = Form(7),
     language: str = Form(""),
+    voice: str = Form(""),
 ):
     if model is None:
         raise HTTPException(503, "the voice is still loading")
@@ -160,7 +209,13 @@ async def speech(
     has_ref = ref_audio is not None and bool(ref_audio.filename)
     if has_ref != bool(ref_text.strip()):
         raise HTTPException(400, "ref_audio and ref_text must be given together")
+    if sum([has_ref, bool(instruction.strip()), bool(voice.strip())]) > 1:
+        raise HTTPException(400, "one of voice, ref_audio + ref_text, or instruction")
     ref = (await ref_audio.read(), Path(ref_audio.filename).suffix or ".wav") if has_ref else None
+    name = voice.strip() or ("" if instruction.strip() or has_ref else default_voice)
+    if name:
+        data, suffix, ref_text = named_voice(name, language)
+        ref = (data, suffix)
 
     def say(part: str, kw: dict) -> bytes:
         with lock:
@@ -192,18 +247,25 @@ async def speech(
 
 
 def main() -> None:
-    global model, token
+    global model, token, voices_dir, default_voice
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", action="append", help="address to listen on; repeat for more (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--model", default="k2-fsa/OmniVoice")
     ap.add_argument("--token-file", required=True, type=Path,
                     help="file holding the bearer token every request must carry")
+    ap.add_argument("--voices-dir", type=Path, default=Path("~/.config/iris-voice/voices"),
+                    help="named voices: <name>/<language>.flac + <language>.txt")
+    ap.add_argument("--default-voice", default="", help="the named voice for text alone")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = args.token_file.expanduser().read_text().strip().encode()
     if not token:
         ap.error(f"{args.token_file} is empty")
+    voices_dir = args.voices_dir.expanduser()
+    default_voice = args.default_voice
+    if default_voice and not voice_languages(default_voice):
+        ap.error(f"--default-voice {default_voice}: no clips in {voices_dir / default_voice}")
     log.info("loading %s", args.model)
     model = OmniVoice.from_pretrained(args.model, device_map="cuda:0", dtype=torch.float16)
     model.generate(text="Ready.")            # warm up: the first sentence is slow otherwise

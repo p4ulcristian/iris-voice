@@ -5,7 +5,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=CODE_DIR/.venv/bin/python SERVER_PY HOST_ARGS --port VOICE_PORT --token-file TOKEN_FILE
+ExecStart=CODE_DIR/.venv/bin/python SERVER_PY HOST_ARGS --port VOICE_PORT --token-file TOKEN_FILE --voices-dir VOICES_DIR --default-voice DEFAULT_VOICE
 Restart=on-failure
 RestartSec=10
 

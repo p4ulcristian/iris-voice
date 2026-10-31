@@ -12,6 +12,10 @@ PORT=${VOICE_PORT:-7860}
 HOST_ARGS=$(printf -- '--host %s ' ${VOICE_HOSTS:-127.0.0.1})
 CODE=${VOICE_CODE:-$HOME/.local/share/omnivoice}
 TOKEN_FILE=${VOICE_TOKEN_FILE:-$HOME/.config/iris-voice/token}
+# Named voices: <name>/<language>.flac + <language>.txt (its exact words). VOICE_DEFAULT names the one
+# text alone is spoken in; empty = OmniVoice picks a voice.
+VOICES_DIR=${VOICE_VOICES_DIR:-$HOME/.config/iris-voice/voices}
+DEFAULT=${VOICE_DEFAULT:-}
 HERE="$(dirname "$(readlink -f "$0")")"
 
 if [ ! -s "$TOKEN_FILE" ]; then
@@ -19,12 +23,14 @@ if [ ! -s "$TOKEN_FILE" ]; then
   (umask 077 && python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$TOKEN_FILE")
   echo "Made a token in $TOKEN_FILE"
 fi
+mkdir -p "$VOICES_DIR"
 
 [ -d "$CODE/.git" ] || git clone -q https://github.com/k2-fsa/OmniVoice.git "$CODE"
 (cd "$CODE" && uv sync -q)
 
 mkdir -p ~/.config/systemd/user
 sed -e "s|CODE_DIR|$CODE|g" -e "s|SERVER_PY|$HERE/server.py|g" -e "s|VOICE_PORT|$PORT|g" -e "s|HOST_ARGS|${HOST_ARGS% }|g" -e "s|TOKEN_FILE|$TOKEN_FILE|g" \
+    -e "s|VOICES_DIR|$VOICES_DIR|g" -e "s|DEFAULT_VOICE|\"$DEFAULT\"|g" \
     "$HERE/iris-voice.service" > ~/.config/systemd/user/iris-voice.service
 systemctl --user daemon-reload
 systemctl --user enable --now iris-voice.service

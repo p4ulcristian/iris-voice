@@ -17,7 +17,14 @@ any program ── Bearer token, text (+ a voice) ──▶ iris-voice (server.p
   answer is 401. The token is in `~/.config/iris-voice/token`, made by the
   first install. So the service is safe on any address, with or without a
   proxy in front.
-- **Voices**: a voice is cloned from a reference clip (`ref_audio` + its words
+- **Named voices**: folders in `~/.config/iris-voice/voices/` (`VOICE_VOICES_DIR`),
+  one per voice: `<language>.flac` (or `.wav`) and `<language>.txt` with its
+  exact words, one pair per language (`iris/en.flac`, `iris/hu.flac`...). A
+  request names one with `voice`; text alone is spoken in the default voice
+  (`VOICE_DEFAULT` at install). The clip used is the one in the request's
+  `language`, else English, else the first. The folders are local: nothing
+  of them is in this repo.
+- **Other voices**: a voice is cloned from a reference clip (`ref_audio` + its words
   in `ref_text`), or designed from a description (`instruction`). A
   description alone drifts a little from one sentence to the next, so a caller
   that wants the same voice every time designs it once and clones that clip
@@ -43,7 +50,8 @@ It makes the token, clones OmniVoice (to `~/.local/share/omnivoice`, or
 user service `iris-voice` on `127.0.0.1:7860` (`VOICE_PORT`).
 `VOICE_HOSTS="127.0.0.1 <address>"` makes it listen on more addresses, a VPN's
 for a proxy in front; an address that is not up yet is bound anyway and
-answers once it is. `VOICE_TOKEN_FILE` puts the token somewhere else.
+answers once it is. `VOICE_TOKEN_FILE` puts the token somewhere else;
+`VOICE_DEFAULT=<name>` makes a named voice the one for text alone.
 
 ## API
 
@@ -52,9 +60,14 @@ while it is made:
 
 | fields | does |
 |---|---|
+| `text`, `voice` (optional), `seed` | a named voice; without `voice`, the default one |
 | `text`, `ref_audio`, `ref_text` (its exact words), `seed` | clone a voice |
 | `text`, `instruction`, `seed` | design a voice from a description |
 | `language` (optional, e.g. `hu`) | the text's language; a little better than guessing |
+
+`voice`, `ref_audio` and `instruction` exclude each other. `GET /v1/voices`
+lists the named voices and their languages, and the default:
+`{"default": "iris", "voices": {"iris": ["en", "hu"]}}`.
 
 `cfg_scale` is accepted and ignored (Breeze, the voice before this one, used
 it). One request at a time; others wait. `GET /health` answers `ok` once the
@@ -62,6 +75,6 @@ model is loaded.
 
 ```bash
 curl -s -H "Authorization: Bearer $(cat ~/.config/iris-voice/token)" \
-  -F text="Hello there." -F instruction="a calm woman" \
+  -F text="Hello there." \
   http://127.0.0.1:7860/v1/audio/speech | aplay -f S16_LE -r 24000 -c 1
 ```
